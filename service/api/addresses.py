@@ -1,8 +1,10 @@
+import json
 import logging
 
-from datetime import datetime, timedelta
+from datetime import datetime, date
 
 from flask import abort, jsonify
+from service.api.persons import PersonResultSchema
 from webargs.flaskparser import use_args
 
 from marshmallow import Schema, fields
@@ -30,6 +32,24 @@ class AddressSchema(Schema):
     end_date = fields.Date(required=False)
 
 
+
+def create_new_address_segment(payload, person_id):
+    address_segment = AddressSegment(
+            street_one=payload.get("street_one"),
+            street_two=payload.get("street_two"),
+            city=payload.get("city"),
+            state=payload.get("state"),
+            zip_code=payload.get("zip_code"),
+            start_date=payload.get("start_date"),
+            person_id=person_id,
+        )
+
+    db.session.add(address_segment)
+    db.session.commit()
+    db.session.refresh(address_segment)
+    return address_segment
+
+
 @app.route("/api/persons/<uuid:person_id>/address", methods=["GET"])
 @use_args(GetAddressQueryArgsSchema(), location="querystring")
 def get_address(args, person_id):
@@ -52,25 +72,22 @@ def create_address(payload, person_id):
     # If there are no AddressSegment records present for the person, we can go
     # ahead and create with no additional logic.
     elif len(person.address_segments) == 0:
-        address_segment = AddressSegment(
-            street_one=payload.get("street_one"),
-            street_two=payload.get("street_two"),
-            city=payload.get("city"),
-            state=payload.get("state"),
-            zip_code=payload.get("zip_code"),
-            start_date=payload.get("start_date"),
-            person_id=person_id,
-        )
+        address_segment = create_new_address_segment(payload, person_id)
 
-        db.session.add(address_segment)
-        db.session.commit()
-        db.session.refresh(address_segment)
+    elif len(person.address_segments) >= 1:
+        latest_address = person.address_segments[-1]
+        latest_address_schema = AddressSchema().dump(latest_address)
+        latest_address_start_date = latest_address_schema['start_date']
+        latest_address_start_date = datetime.strptime(latest_address_start_date, '%Y-%m-%d').date()
+        if payload.get('start_date') < latest_address_start_date:
+            raise Exception('New Address Start Date needs to be greater than most recent address')
+        else:
+            today = date.today()
+            latest_address.end_date = today.strftime("%Y-%m-%d")
+            db.session.commit()
+            address_segment = create_new_address_segment(payload, person_id)
+            return jsonify(AddressSchema().dump(latest_address))
     else:
-        # TODO: Implementation
-        # If there are one or more existing AddressSegments, create a new AddressSegment
-        # that begins on the start_date provided in the API request and continues
-        # into the future. If the start_date provided is not greater than most recent
-        # address segment start_date, raise an Exception.
         raise NotImplementedError()
 
     return jsonify(AddressSchema().dump(address_segment))
